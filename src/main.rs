@@ -4,11 +4,11 @@ use embedded_graphics::{
     draw_target::DrawTarget,
     geometry::{Dimensions, OriginDimensions, Point, Size},
     mono_font::{ascii::FONT_6X10, MonoTextStyle},
-    pixelcolor::{PixelColor, Rgb565},
+    pixelcolor::Rgb565,
     prelude::RgbColor,
-    primitives::{PointsIter, Rectangle},
+    primitives::Rectangle,
     text::{Alignment, Text},
-    Drawable, Pixel,
+    Drawable,
 };
 use embedded_graphics_framebuf::FrameBuf;
 use esp_idf_svc::hal::{
@@ -21,26 +21,18 @@ use esp_idf_svc::hal::{
     },
     units::FromValueType,
 };
-use itertools::izip;
 use rand::Rng;
 use st7735_lcd::ST7735;
 
 fn intensify(rng: &mut impl Rng, point: Point, amplitude: i32) -> Point {
-    Point::new(
-        point.x + rng.gen_range(-amplitude..amplitude),
-        point.y + rng.gen_range(-amplitude..amplitude),
-    )
-}
-
-fn fb_diff<C: PixelColor>(size: Size, old: impl Iterator<Item = C>, new: impl IntoIterator<Item = C>) -> impl IntoIterator<Item = Pixel<C>> {
-    let area = Rectangle::new(Point::zero(), size);
-    izip!(area.points(), old, new).filter_map(|(coords, o, n)| {
-        if o == n {
-            None
-        } else {
-            Some(Pixel(coords, n.clone()))
-        }
-    })
+    if amplitude == 0 {
+        point
+    } else {
+        Point::new(
+            point.x + rng.gen_range(-amplitude..amplitude),
+            point.y + rng.gen_range(-amplitude..amplitude),
+        )
+    }
 }
 
 fn main() {
@@ -95,43 +87,54 @@ fn main() {
     lcd.init(&mut FreeRtos).unwrap();
     lcd.set_orientation(&st7735_lcd::Orientation::Landscape)
         .unwrap();
-    lcd.clear(Rgb565::BLACK).unwrap();
     lcd_led.set_high().unwrap();
 
     let mut rng = rand::thread_rng();
-    FreeRtos::delay_ms(100);
     log::info!("allocating buffers");
-    let mut front_buffer: Box<[Rgb565; LCD_PIXEL_COUNT]> = {
+    let mut buffer: Box<[Rgb565; LCD_PIXEL_COUNT]> = {
         let mut buf = Box::<[Rgb565]>::new_uninit_slice(LCD_PIXEL_COUNT);
         unsafe {
-            buf.iter_mut().for_each(|col| { col.write(Rgb565::BLACK); });
+            buf.iter_mut().for_each(|col| {
+                col.write(Rgb565::BLACK);
+            });
             buf.assume_init().try_into().unwrap()
         }
     };
-    let mut back_buffer = front_buffer.clone();
-    FreeRtos::delay_ms(100);
     log::info!("entering draw loop");
-    loop {
-        let mut framebuffer = FrameBuf::new(
-            TryInto::<&mut [Rgb565; LCD_PIXEL_COUNT]>::try_into(back_buffer.as_mut_slice()).unwrap(),
-            LCD_SIZE.width.try_into().unwrap(),
-            LCD_SIZE.height.try_into().unwrap(),
-        );
 
-        framebuffer.clear(Rgb565::BLACK).unwrap();
-        Text::with_alignment(
-            "Hello LCD!",
-            intensify(&mut rng, lcd.bounding_box().center(), 10),
-            MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE),
-            Alignment::Center,
-        )
-        .draw(&mut framebuffer)
+    let shades_of_red: [Rgb565; 32] = (0..32)
+        .map(|v| Rgb565::new(v, 0, 0))
+        .collect::<Vec<_>>()
+        .try_into()
         .unwrap();
+    const MAX_INTENSITY: i32 = 3;
 
-        let diff = fb_diff(lcd.size(), front_buffer.iter().copied(), back_buffer.iter().copied());
-        lcd.draw_iter(diff).unwrap();
-        std::mem::swap(&mut front_buffer, &mut back_buffer);
+    loop {
+        for (idx, &bgcolor) in shades_of_red.iter().enumerate() {
+            let intensity = idx as i32 / (shades_of_red.len() as i32 / MAX_INTENSITY);
 
-        FreeRtos::delay_ms(10);
+            for frame in 0..10 {
+                let mut framebuffer = FrameBuf::new(
+                    TryInto::<&mut [Rgb565; LCD_PIXEL_COUNT]>::try_into(buffer.as_mut_slice())
+                        .unwrap(),
+                    LCD_SIZE.width.try_into().unwrap(),
+                    LCD_SIZE.height.try_into().unwrap(),
+                );
+
+                framebuffer.clear(bgcolor).unwrap();
+                Text::with_alignment(
+                    "Analyzing Android.bp...",
+                    intensify(&mut rng, lcd.bounding_box().center(), intensity),
+                    MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE),
+                    Alignment::Center,
+                )
+                .draw(&mut framebuffer)
+                .unwrap();
+
+                lcd.fill_contiguous(&Rectangle::new(Point::zero(), lcd.size()), buffer.iter().copied()).unwrap();
+
+                FreeRtos::delay_ms(10);
+            }
+        }
     }
 }
