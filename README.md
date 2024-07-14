@@ -10,3 +10,10 @@
 | A0     | GPIO 17    | ? command/data selection ? |
 | RESET  | GPIO 16    | LCD reset, active low      |
 | CS     | GPIO 15    | chip select                |
+
+# LED pinout
+
+| ESP32 GPIO |
+|------------|
+| GPIO 19    |
+| GPIO 21    |

@@ -11,6 +11,7 @@ use embedded_graphics::{
     Drawable,
 };
 use embedded_graphics_framebuf::FrameBuf;
+use esp_idf_hal::ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver, LEDC};
 use esp_idf_svc::hal::{
     delay::FreeRtos,
     gpio::{AnyInputPin, OutputPin, PinDriver, Pins},
@@ -46,6 +47,13 @@ fn main() {
 
     let Peripherals {
         spi2: lcd_spi,
+        ledc:
+            LEDC {
+                timer0: led_timer,
+                channel0: led_channel0,
+                channel1: led_channel1,
+                ..
+            },
         pins:
             Pins {
                 gpio13: lcd_spi_mosi,
@@ -54,10 +62,18 @@ fn main() {
                 gpio16: lcd_reset,
                 gpio17: lcd_a0,
                 gpio18: lcd_led,
+                gpio19: led_pin0,
+                gpio21: led_pin1,
                 ..
             },
         ..
     } = Peripherals::take().unwrap();
+
+    let timer_config = TimerConfig::default().frequency(5000.Hz().into());
+    let ledc_timer = LedcTimerDriver::new(led_timer, &timer_config).unwrap();
+    let mut led0 = LedcDriver::new(led_channel0, &ledc_timer, led_pin0).unwrap();
+    let mut led1 = LedcDriver::new(led_channel1, &ledc_timer, led_pin1).unwrap();
+
     let lcd_spi = SpiDeviceDriver::new_single(
         lcd_spi,
         lcd_spi_scl,
@@ -108,12 +124,25 @@ fn main() {
         .try_into()
         .unwrap();
     const MAX_INTENSITY: i32 = 3;
+    const FRAMES_PER_SHADE: usize = 10;
+    let total_frames: usize = FRAMES_PER_SHADE * shades_of_red.len();
 
     loop {
         for (idx, &bgcolor) in shades_of_red.iter().enumerate() {
             let intensity = idx as i32 / (shades_of_red.len() as i32 / MAX_INTENSITY);
 
-            for frame in 0..10 {
+            for frame in 0..FRAMES_PER_SHADE {
+                assert!(led0.get_max_duty() == led1.get_max_duty());
+                let led_duty: u32 = {
+                    let max_duty: f32 = led0.get_max_duty() as _;
+                    let curr_frame = idx * FRAMES_PER_SHADE + frame;
+                    let linear_duty: f32 = curr_frame as f32 / total_frames as f32;
+                    let duty = linear_duty.powf(3.0);
+                    (max_duty * duty) as _
+                };
+                led0.set_duty(led_duty).unwrap();
+                led1.set_duty(led_duty).unwrap();
+
                 let mut framebuffer = FrameBuf::new(
                     TryInto::<&mut [Rgb565; LCD_PIXEL_COUNT]>::try_into(buffer.as_mut_slice())
                         .unwrap(),
@@ -131,7 +160,11 @@ fn main() {
                 .draw(&mut framebuffer)
                 .unwrap();
 
-                lcd.fill_contiguous(&Rectangle::new(Point::zero(), lcd.size()), buffer.iter().copied()).unwrap();
+                lcd.fill_contiguous(
+                    &Rectangle::new(Point::zero(), lcd.size()),
+                    buffer.iter().copied(),
+                )
+                .unwrap();
 
                 FreeRtos::delay_ms(10);
             }
