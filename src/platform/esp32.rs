@@ -24,8 +24,10 @@ impl LED for LedcDriver<'_> {
     }
 }
 
-pub struct Platform<Lcd: DrawTarget<Color = Rgb565>, Led0Pin: LED, Led1Pin: LED> {
+pub struct Platform<Lcd: DrawTarget<Color = Rgb565>, LcdLedPin, Led0Pin: LED, Led1Pin: LED> {
     lcd: Lcd,
+    // So an instance of this must be kept around, because dropping it after init turns LED backlight off again
+    _lcd_led: LcdLedPin,
     led0: Led0Pin,
     led1: Led1Pin,
 }
@@ -107,11 +109,11 @@ pub fn new_platform() -> Result<impl super::Platform> {
         .set_high()
         .context("PinDriver::set_high failed for lcd_led")?;
 
-    let platform = Platform { lcd, led0, led1 };
+    let platform = Platform { lcd, _lcd_led: lcd_led, led0, led1 };
     Ok(platform)
 }
 
-impl<Lcd: DrawTarget<Color = Rgb565>, Led0Pin: LED, Led1Pin: LED> super::Platform for Platform<Lcd, Led0Pin, Led1Pin> {
+impl<Lcd: DrawTarget<Color = Rgb565>, LcdLedPin, Led0Pin: LED, Led1Pin: LED> super::Platform for Platform<Lcd, LcdLedPin, Led0Pin, Led1Pin> {
     fn sleep(&mut self, duration: Duration) {
         FreeRtos::delay_ms(
             duration
