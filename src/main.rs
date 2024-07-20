@@ -29,6 +29,7 @@ fn intensify(rng: &mut impl Rng, point: Point, amplitude: i32) -> Point {
     }
 }
 
+#[derive(Clone)]
 struct VecFrameBufferBackend<Color: PixelColor> {
     pixels: Vec<Color>,
     size: Size,
@@ -111,7 +112,11 @@ fn draw_loop(platform: &mut impl Platform) -> Result<()> {
 }
 
 fn main() {
+    #[cfg(esp32)]
     let mut platform = platform::new_esp32().expect("platform::new_esp32 failed");
+    #[cfg(unix)]
+    let mut platform = platform::new_pc().expect("platform::new_pc failed");
+
     loop {
         match draw_loop(&mut platform) {
             Ok(_) => log::warn!("draw_loop exited with success (?)"),

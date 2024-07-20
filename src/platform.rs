@@ -33,3 +33,8 @@ pub trait Platform {
 mod esp32;
 #[cfg(esp32)]
 pub use esp32::new_platform as new_esp32;
+
+#[cfg(unix)]
+mod pc;
+#[cfg(unix)]
+pub use pc::new_platform as new_pc;
