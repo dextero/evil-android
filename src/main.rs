@@ -115,9 +115,9 @@ fn draw_loop(platform: &mut impl Platform) -> Result<()> {
 }
 
 fn main() {
-    #[cfg(esp32)]
+    #[cfg(target_arch = "xtensa")]
     let mut platform = platform::new_esp32().expect("platform::new_esp32 failed");
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     let mut platform = platform::new_pc().expect("platform::new_pc failed");
 
     loop {

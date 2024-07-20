@@ -29,12 +29,12 @@ pub trait Platform {
     fn led1(&mut self) -> &mut impl LED;
 }
 
-#[cfg(esp32)]
+#[cfg(target_arch = "xtensa")]
 mod esp32;
-#[cfg(esp32)]
+#[cfg(target_arch = "xtensa")]
 pub use esp32::new_platform as new_esp32;
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod pc;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub use pc::new_platform as new_pc;
