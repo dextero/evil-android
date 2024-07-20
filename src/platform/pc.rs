@@ -26,10 +26,7 @@ impl Rgba32FrameBufferBackend {
         let width = usize::try_from(size.width).unwrap();
         let height = usize::try_from(size.height).unwrap();
         let pixels = vec![[fill_color.r(), fill_color.g(), fill_color.b(), 255]; width * height];
-        Self {
-            pixels,
-            size,
-        }
+        Self { pixels, size }
     }
 
     fn to_gl_texture<
@@ -70,7 +67,8 @@ impl FrameBufferBackend for SyncFBBackend {
     }
 }
 
-pub struct FakeLED(Mutex<Brightness>);
+#[derive(Clone)]
+pub struct FakeLED(Arc<Mutex<Brightness>>);
 
 impl super::LED for FakeLED {
     fn set_brightness(&mut self, brightness: Brightness) -> Result<()> {
@@ -88,10 +86,9 @@ pub struct Platform {
 #[derive(Clone, Copy, Default)]
 struct Vertex {
     pos: [f32; 2],
-    tex_coords: [f32; 2],
 }
 
-implement_vertex!(Vertex, pos, tex_coords);
+implement_vertex!(Vertex, pos);
 
 pub fn new_platform() -> Result<impl crate::platform::Platform> {
     let size = Size::new(160, 128);
@@ -104,9 +101,11 @@ pub fn new_platform() -> Result<impl crate::platform::Platform> {
         size.width.try_into()?,
         size.height.try_into()?,
     );
-    let led0 = FakeLED(Mutex::new(0f32.into()));
-    let led1 = FakeLED(Mutex::new(0f32.into()));
+    let led0 = FakeLED(Arc::new(Mutex::new(0f32.into())));
+    let led1 = FakeLED(Arc::new(Mutex::new(0f32.into())));
 
+    let led0_clone = led0.clone();
+    let led1_clone = led1.clone();
     std::thread::spawn(move || {
         let event_loop = match winit::event_loop::EventLoopBuilder::new()
             .with_any_thread(true)
@@ -122,104 +121,142 @@ pub fn new_platform() -> Result<impl crate::platform::Platform> {
             .with_title("evil-android")
             .build(&event_loop);
 
-        let vs_2d_pos_src = r#"
+        let vs_src = r#"
 #version 140
 
 in vec2 pos;
-in vec2 tex_coords;
-out vec2 v_tex_coords;
 
 void main() {
     gl_Position = vec4(pos, 0.0, 1.0);
-    v_tex_coords = tex_coords;
 }
         "#;
-        let fs_color_src = r#"
+
+        // https://www.shadertoy.com/view/McfcWB
+        let fs_src = r#"
 #version 140
 
-uniform vec4 u_color;
+uniform vec2 u_resolution;
+uniform vec3 u_left_eye_color;
+uniform vec3 u_right_eye_color;
+uniform sampler2D u_lcd_texture;
 
-out vec4 color;
+out vec4 fragColor;
+
+const float PI = 3.1415926535897932384626433832795;
+
+vec2 translate(vec2 pos, vec2 delta) {
+    return pos + delta;
+}
+
+vec2 rotate(vec2 pos, float angle) {
+    return vec2(pos.x * cos(angle) - pos.y * sin(angle),
+                pos.y * cos(angle) + pos.x * sin(angle));
+}
+
+bool in_ellipse(vec2 pos, vec2 center, vec2 radii) {
+    vec2 delta = pos - center;
+    delta.y /= radii.y / radii.x;
+    return length(delta) < radii.x;
+}
+
+bool in_circle(vec2 pos, vec2 center, float radius) {
+    return distance(pos, center) < radius;
+}
+
+bool in_rect(vec2 pos,vec2 top_left, vec2 bottom_right) {
+    return !(pos.x < top_left.x || pos.x > bottom_right.x || pos.y < top_left.y || pos.y > bottom_right.y);
+}
 
 void main() {
-    color = u_color;
+    // Normalized pixel coordinates -200..200 on y, aspect ratio preserving on x
+    vec2 pos = vec2(gl_FragCoord.x - u_resolution.x / 2.0,
+                    gl_FragCoord.y - u_resolution.y / 2.0);
+    pos /= u_resolution.y;
+    pos *= 400.0;
+    
+    vec4 col_bg = vec4(1.0, 1.0, 1.0, 0.0);
+    vec4 col_android = vec4(0.23921568627450981, 0.8627450980392157, 0.5176470588235295, 1.0);
+    
+    bool in_left_eye = in_circle(vec2(-pos.x, pos.y), vec2(42, 84), 8.0);
+    bool in_right_eye = in_circle(vec2(pos.x, pos.y), vec2(42, 84), 8.0);
+
+    float angle_rad = 29.0 * PI / 180.0;
+    bool in_android_antennas = in_rect(rotate(vec2(abs(pos.x), pos.y), angle_rad), vec2(-14, 86), vec2(-14+6, 86+66));
+    bool in_android_antenna_tips = in_circle(rotate(vec2(abs(pos.x), pos.y), angle_rad), vec2(-14+3, 86+66), 3.0);
+    bool in_android_head_base = in_ellipse(pos, vec2(0, 41), vec2(91, 84)) && pos.y > 41.0;
+    bool in_android_head = in_android_head_base || in_android_antennas || in_android_antenna_tips;
+    
+    bool in_android_body_upper = in_rect(pos, vec2(-91, 35-142+22), vec2(-91+182, 35));
+    bool in_android_body_mid = in_rect(pos, vec2(-91+22, 35-142), vec2(-91+182-22, 35));
+    bool in_android_body_lower_corners = in_circle(vec2(abs(pos.x), pos.y), vec2(91-22, 35-142+22), 22.0);
+    bool in_android_body = in_android_body_upper || in_android_body_mid || in_android_body_lower_corners;
+    
+    bool in_android_arms_upper = in_circle(vec2(abs(pos.x), pos.y), vec2(145-24, 10), 24.0);
+    bool in_android_arms_mid= in_rect(vec2(abs(pos.x), pos.y), vec2(145-48, 10-133+58), vec2(145, 10));
+    bool in_android_arms_lower = in_circle(vec2(abs(pos.x), pos.y), vec2(145-24, 10-133+58), 24.0);
+    bool in_android_arms = in_android_arms_upper || in_android_arms_mid || in_android_arms_lower;
+    
+    bool in_android_legs_mid= in_rect(vec2(abs(pos.x), pos.y), vec2(65-48, 10-133-25), vec2(65, 10-25));
+    bool in_android_legs_lower = in_circle(vec2(abs(pos.x), pos.y), vec2(65-24, 10-133-25), 24.0);
+    bool in_android_legs = in_android_legs_mid || in_android_legs_lower;
+    
+    bool in_android = in_android_head || in_android_body || in_android_arms || in_android_legs;
+    
+    vec2 display_center = vec2(0, -35);
+    vec2 display_size = vec2(160, 128);
+    float display_scale = 0.7;
+    display_size *= display_scale;
+    vec2 display_uv = (pos - (display_center - display_size / 2.0)) / display_size;
+    bool in_display = in_rect(pos, display_center - display_size / 2.0, display_center + display_size / 2.0);
+
+    if (in_left_eye) {
+        fragColor = vec4(u_left_eye_color, 1.0);
+    } else if (in_right_eye) {
+        fragColor = vec4(u_right_eye_color, 1.0);
+    } else if (in_display) {
+        fragColor = texture2D(u_lcd_texture, display_uv);
+    } else if (in_android) {
+        fragColor = col_android;
+    } else {
+        fragColor = col_bg;
+    }
 }
         "#;
-        let fs_texture_src = r#"
-#version 140
+        let program = glium::Program::from_source(&display, vs_src, fs_src, None).unwrap();
 
-uniform sampler2D u_texture;
-
-in vec2 v_tex_coords;
-out vec4 color;
-
-void main() {
-    color = texture(u_texture, v_tex_coords);
-}
-        "#;
-        let color_2d_program =
-            glium::Program::from_source(&display, vs_2d_pos_src, fs_color_src, None).unwrap();
-        let texture_2d_program =
-            glium::Program::from_source(&display, vs_2d_pos_src, fs_texture_src, None).unwrap();
-
-        let circle_vertices = {
-            let mut v = vec![Vertex {
-                pos: [0.0, 0.0],
-                ..Default::default()
-            }];
-            let points = 64;
-            for i in 0..points {
-                let angle = (2.0 * std::f64::consts::PI * i as f64 / points as f64) as f32;
-                v.push(Vertex {
-                    pos: [angle.cos(), angle.sin()],
-                    tex_coords: Default::default(),
-                });
-            }
-            v
-        };
-        let circle_vertices = glium::VertexBuffer::new(&display, &circle_vertices).unwrap();
-        let lcd_vertices = vec![
-            Vertex {
-                pos: [-0.5, -0.5],
-                tex_coords: [0.0, 0.0],
-            },
-            Vertex {
-                pos: [0.5, -0.5],
-                tex_coords: [1.0, 0.0],
-            },
-            Vertex {
-                pos: [-0.5, 0.5],
-                tex_coords: [0.0, 1.0],
-            },
-            Vertex {
-                pos: [0.5, 0.5],
-                tex_coords: [1.0, 1.0],
-            },
+        let vertices = vec![
+            Vertex { pos: [-1.0, -1.0] },
+            Vertex { pos: [1.0, -1.0] },
+            Vertex { pos: [-1.0, 1.0] },
+            Vertex { pos: [1.0, 1.0] },
         ];
-        let lcd_vertices = glium::VertexBuffer::new(&display, &lcd_vertices).unwrap();
+        let vertices = glium::VertexBuffer::new(&display, &vertices).unwrap();
 
         let result = event_loop.run(move |event, window_target| match event {
             winit::event::Event::WindowEvent { event, .. } => match event {
                 winit::event::WindowEvent::CloseRequested => window_target.exit(),
                 winit::event::WindowEvent::RedrawRequested => {
                     let mut frame = display.draw();
-                    const ANDROID_GREEN: Rgb888 = Rgb888::new(61, 220, 132);
-                    frame.clear_color_srgb(
-                        ANDROID_GREEN.r() as f32 / 255.0f32,
-                        ANDROID_GREEN.g() as f32 / 255.0f32,
-                        ANDROID_GREEN.b() as f32 / 255.0f32,
-                        1.0f32,
-                    );
+                    frame.clear_color_srgb(1.0f32, 1.0f32, 1.0f32, 1.0f32);
 
-                    let texture = pixel_buffer.0.lock().unwrap().to_gl_texture(&display).unwrap();
+                    let window_size = window.inner_size();
+                    let texture = pixel_buffer
+                        .0
+                        .lock()
+                        .unwrap()
+                        .to_gl_texture(&display)
+                        .unwrap();
                     let uniforms = glium::uniform! {
-                        u_texture: &texture,
+                        u_resolution: [window_size.width as f32, window_size.height as f32],
+                        u_left_eye_color: [(*led0_clone.0.lock().unwrap()).into(), 0.0f32, 0.0f32],
+                        u_right_eye_color: [(*led1_clone.0.lock().unwrap()).into(), 0.0f32, 0.0f32],
+                        u_lcd_texture: &texture,
                     };
                     frame
                         .draw(
-                            &lcd_vertices,
+                            &vertices,
                             glium::index::NoIndices(glium::index::PrimitiveType::TriangleStrip),
-                            &texture_2d_program,
+                            &program,
                             &uniforms,
                             &Default::default(),
                         )
@@ -261,6 +298,8 @@ impl crate::platform::Platform for Platform {
     }
 
     fn lcd(&mut self) -> &mut impl DrawTarget<Color = Rgb565> {
+        // Artificially limit FPS. The real LCD is pretty slow.
+        std::thread::sleep(Duration::from_millis(10));
         &mut self.draw_target
     }
 

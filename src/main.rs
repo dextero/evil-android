@@ -78,6 +78,9 @@ fn draw_loop(platform: &mut impl Platform) -> Result<()> {
                 let brightness = Brightness::from({
                     let curr_frame = idx * FRAMES_PER_SHADE + frame;
                     let linear: f32 = curr_frame as f32 / total_frames as f32;
+                    // Brightness of real TFT LEDs is *very* non-linear. Event a tiny amount of
+                    // PWM duty (that we map this brightness to) makes them shine relatively
+                    // bright, and increasing that value has somewhat less noticeable effect.
                     linear.powf(3.0)
                 });
                 platform.led0().set_brightness(brightness)?;
