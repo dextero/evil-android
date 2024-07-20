@@ -1,6 +1,7 @@
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use embedded_graphics::{draw_target::DrawTarget, geometry::Size, pixelcolor::Rgb565};
 use esp_idf_hal::ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver, LEDC};
 use esp_idf_svc::hal::{
     delay::FreeRtos,
@@ -14,20 +15,22 @@ use esp_idf_svc::hal::{
 };
 use st7735_lcd::ST7735;
 
-impl crate::platform::LED for LedcDriver<'_> {
+use super::{Brightness, LED};
+
+impl LED for LedcDriver<'_> {
     fn set_brightness(&mut self, brightness: Brightness) -> Result<()> {
-        let led_duty = (brightness.0 * self.get_max_duty() as f32) as u32;
+        let led_duty = (f32::from(brightness) * self.get_max_duty() as f32) as u32;
         Ok(self.set_duty(led_duty)?)
     }
 }
 
-pub struct Platform<Lcd, Led0Pin, Led1Pin> {
+pub struct Platform<Lcd: DrawTarget<Color = Rgb565>, Led0Pin: LED, Led1Pin: LED> {
     lcd: Lcd,
     led0: Led0Pin,
     led1: Led1Pin,
 }
 
-pub fn new_platform() -> Result<impl crate::platform::Platform> {
+pub fn new_platform() -> Result<impl super::Platform> {
     // It is necessary to call this function once. Otherwise some patches to the runtime
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
     esp_idf_svc::sys::link_patches();
@@ -62,9 +65,9 @@ pub fn new_platform() -> Result<impl crate::platform::Platform> {
     let timer_config = TimerConfig::default().frequency(5000.Hz().into());
     let ledc_timer =
         LedcTimerDriver::new(led_timer, &timer_config).context("LedcTimerDriver::new failed")?;
-    let mut led0 = LedcDriver::new(led_channel0, &ledc_timer, led_pin0)
+    let led0 = LedcDriver::new(led_channel0, &ledc_timer, led_pin0)
         .context("LedcDriver::new failed for LED0")?;
-    let mut led1 = LedcDriver::new(led_channel1, &ledc_timer, led_pin1)
+    let led1 = LedcDriver::new(led_channel1, &ledc_timer, led_pin1)
         .context("LedcDriver::new faled for LED1")?;
 
     let lcd_spi = SpiDeviceDriver::new_single(
@@ -83,30 +86,32 @@ pub fn new_platform() -> Result<impl crate::platform::Platform> {
         .context("PinDriver::output failed for lcd_a0")?;
     let mut lcd_led = PinDriver::output(lcd_led.downgrade_output())
         .context("PinDriver::output failed for lcd_led")?;
+
+    const LCD_SIZE: Size = Size::new(160, 128);
     let mut lcd = ST7735::new(
         lcd_spi,
         lcd_a0,
         lcd_reset,
         true,
         false,
-        Self::LCD_SIZE.width.try_into().unwrap(),
-        Self::LCD_SIZE.height.try_into().unwrap(),
+        LCD_SIZE.width.try_into().unwrap(),
+        LCD_SIZE.height.try_into().unwrap(),
     );
 
     log::info!("initializing LCD");
-    lcd.init(&mut FreeRtos).context("ST7735::init failed")?;
+    lcd.init(&mut FreeRtos)
+        .map_err(|_| anyhow::Error::msg("ST7735::init failed"))?;
     lcd.set_orientation(&st7735_lcd::Orientation::Landscape)
-        .context("ST7735::set_orientation failed")?;
+        .map_err(|_| anyhow::Error::msg("ST7735::set_orientation failed"))?;
     lcd_led
         .set_high()
         .context("PinDriver::set_high failed for lcd_led")?;
 
-    Ok(Self { lcd, led0, led1 })
+    let platform = Platform { lcd, led0, led1 };
+    Ok(platform)
 }
 
-impl<Lcd, Led0Pin, Led1Pin> crate::platform::Platform for Platform<Lcd, Led0Pin, Led1Pin> {
-    const LCD_SIZE: Size = Size::new(160, 128);
-
+impl<Lcd: DrawTarget<Color = Rgb565>, Led0Pin: LED, Led1Pin: LED> super::Platform for Platform<Lcd, Led0Pin, Led1Pin> {
     fn sleep(&mut self, duration: Duration) {
         FreeRtos::delay_ms(
             duration
@@ -116,15 +121,15 @@ impl<Lcd, Led0Pin, Led1Pin> crate::platform::Platform for Platform<Lcd, Led0Pin,
         );
     }
 
-    fn lcd(&mut self) -> &mut impl DrawTarget {
+    fn lcd(&mut self) -> &mut impl DrawTarget<Color = Rgb565> {
         &mut self.lcd
     }
 
-    fn led0(&mut self) -> &mut impl crate::platform::LED {
+    fn led0(&mut self) -> &mut impl LED {
         &mut self.led0
     }
 
-    fn led1(&mut self) -> &mut impl crate::platform::LED {
+    fn led1(&mut self) -> &mut impl LED {
         &mut self.led1
     }
 }
