@@ -20,18 +20,25 @@
 | GPIO 19    | left eye / LED0  |
 | GPIO 21    | right eye / LED1 |
 
+## Linux simulator build
+
+Make sure to use the `main` branch. `cargo run` will do the trick.
+
 ## ESP32 build
 
 See "Rust on ESP" book for instructions for setting up the
 toolchain: https://docs.esp-rs.org/book/introduction.html
 
-## Linux simulator build
+Either use the `esp32` branch, or:
 
-1. Manually comment out the line in `build.rs` file.
+1. Uncomment the line in `build.rs` file.
 
    `#[cfg]` are not defined when building it, and `embuild::espidf` just
    doesn't exist on non-ESP builds so a runtime check fails to compile. Of
    course there's a 6-year-old issue about this.
    https://github.com/rust-lang/cargo/issues/4932
 
-2. `cargo run --target x86_64-unknown-linux-gnu`
+2. Uncomment the `channel = "esp"` line in `rust-toolchain.toml` file, and
+   comment the `channel = "stable"` one.
+
+3. Uncomment the `#target = "xtensa-esp32-espidf"` line in `.cargo/config.toml`.

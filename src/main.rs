@@ -1,5 +1,3 @@
-#![feature(new_uninit)]
-
 use std::time::Duration;
 
 use anyhow::{Context, Result};
