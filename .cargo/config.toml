@@ -1,6 +1,6 @@
 [build]
 # uncomment for esp32 build
-#target = "xtensa-esp32-espidf"
+target = "xtensa-esp32-espidf"
 
 [target.xtensa-esp32-espidf]
 linker = "ldproxy"

@@ -62,5 +62,5 @@ fn main() {
     preprocess_image(&Path::new("data/dumpster-fire.png"), "DUMPSTER_FIRE");
 
     // I give up, just comment this out for non-esp builds
-    //embuild::espidf::sysenv::output();
+    embuild::espidf::sysenv::output();
 }

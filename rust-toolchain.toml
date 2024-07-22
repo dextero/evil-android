@@ -1,5 +1,5 @@
 [toolchain]
 # for linux build
-channel = "stable"
+#channel = "stable"
 # for esp32 build
-#channel = "esp"
+channel = "esp"
