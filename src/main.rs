@@ -1,4 +1,4 @@
-use std::{ops::{Div, Rem}, time::{Duration, Instant}};
+use std::{ops::{Div, Range, Rem}, time::{Duration, Instant}};
 
 use anyhow::{Context, Result};
 use embedded_graphics::{
@@ -76,6 +76,97 @@ impl<Color: PixelColor> FrameBufferBackend for &mut VecFrameBufferBackend<Color>
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct RowOffset {
+    offset: usize,
+    row_width: usize,
+}
+
+impl RowOffset {
+    fn new<C: PixelColor, B: FrameBufferBackend<Color = C>>(offset: usize, fb: &FrameBuf<C, B>) -> Self {
+        assert!(fb.width() > 0);
+        let row_width = fb.width();
+        let offset = offset.min(row_width);
+        Self { offset, row_width }
+    }
+
+    fn range_to(self, other: usize) -> RowRange {
+        RowRange {
+            start: self.offset.min(other).min(self.row_width),
+            end: self.offset.max(other).min(self.row_width),
+            row_width: self.row_width,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RowRange {
+    start: usize,
+    end: usize,
+    row_width: usize,
+}
+
+impl RowRange {
+    fn offset(self, rhs: isize) -> RowRange {
+        let start = ((self.start as isize).saturating_add(rhs).max(0) as usize).min(self.row_width);
+        let end = ((self.end as isize).saturating_add(rhs).max(0) as usize).min(self.row_width);
+        Self { start, end, ..self }
+    }
+
+    fn to_range(&self) -> Range<usize> {
+        self.start..self.end
+    }
+}
+
+struct Intensity(usize);
+
+impl Intensity {
+    const MAX: Intensity = Intensity(128);
+}
+
+impl From<usize> for Intensity {
+    fn from(value: usize) -> Self {
+        Self(value.min(Self::MAX.0))
+    }
+}
+
+fn add_noise<B: FrameBufferBackend<Color = Rgb565>>(fb: &mut FrameBuf<Rgb565, B>, rng: &mut impl Rng, intensity: Intensity) {
+    for index in 0..fb.data.nr_elements() {
+        let apply_noise = rng.next_u32() as usize % Intensity::MAX.0 < intensity.0;
+        if apply_noise {
+            let random_color = Rgb565::new((rng.next_u32() % 32) as u8, (rng.next_u32() % 64) as u8, (rng.next_u32() % 32) as u8);
+            fb.data.set(index, random_color);
+        }
+    }
+}
+
+fn glitch<C: PixelColor, B: FrameBufferBackend<Color = C>>(fb: &mut FrameBuf<C, B>, rng: &mut impl Rng, max_offset: usize) {
+    if max_offset == 0 {
+        return;
+    }
+
+    for line in 0..fb.height() {
+        let should_glitch = rng.next_u32() % 128 < 32;
+        if should_glitch {
+            let mut rand_idx = || rng.next_u32() as usize % fb.width();
+            let offset = (rand_idx() % max_offset) as i32 - (max_offset as i32 / 2);
+            let src = RowOffset::new(rand_idx(), fb).range_to(rand_idx());
+            let dst = src.offset(offset as _);
+
+            let row_index = line * fb.width();
+            if offset < 0 {
+                for (src, dst) in src.to_range().zip(dst.to_range()) {
+                    fb.data.set(row_index + dst, fb.data.get(row_index + src));
+                }
+            } else {
+                for (src, dst) in src.to_range().zip(dst.to_range()).rev() {
+                    fb.data.set(row_index + dst, fb.data.get(row_index + src));
+                }
+            }
+        }
+    }
+}
+
 fn draw_loop(platform: &mut impl Platform) -> Result<()> {
     let mut rng = rand::thread_rng();
     log::info!("allocating buffers");
@@ -91,6 +182,7 @@ fn draw_loop(platform: &mut impl Platform) -> Result<()> {
 
     loop {
         let start_time = Instant::now();
+        let mut glitchiness = 0;
 
         for (idx, &bgcolor) in shades_of_red.iter().enumerate() {
             let curr_time = Instant::now();
@@ -108,6 +200,7 @@ fn draw_loop(platform: &mut impl Platform) -> Result<()> {
                     let exaggerated_time = (curr_time - start_time) + Duration::from_secs_f64(exaggeration);
                     format_duration(exaggerated_time)
                 } else {
+                    glitchiness += 1;
                     "9999999999999999999999999999".to_owned()
                 };
 
@@ -137,6 +230,8 @@ fn draw_loop(platform: &mut impl Platform) -> Result<()> {
                 .draw(&mut framebuffer)
                 .context("Drawable::draw failed")?;
 
+                glitch(&mut framebuffer, &mut rng, glitchiness as usize);
+
                 let bb = platform.lcd().bounding_box();
                 platform
                     .lcd()
@@ -145,6 +240,21 @@ fn draw_loop(platform: &mut impl Platform) -> Result<()> {
 
                 platform.sleep(Duration::from_millis(10));
             }
+        }
+
+        for _ in 0..FRAMES_PER_SHADE {
+            let size = buffer.size.clone();
+            let mut framebuffer =
+                FrameBuf::new(&mut buffer, size.width.try_into()?, size.height.try_into()?);
+            add_noise(&mut framebuffer, &mut rng, Intensity::MAX);
+
+            let bb = platform.lcd().bounding_box();
+            platform
+                .lcd()
+                .fill_contiguous(&bb, buffer.pixels.iter().copied())
+                .map_err(|_| anyhow::Error::msg("DrawTarget::fill_contiguous failed"))?;
+
+            platform.sleep(Duration::from_millis(10));
         }
     }
 }
