@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{ops::{Div, Rem}, time::{Duration, Instant}};
 
 use anyhow::{Context, Result};
 use embedded_graphics::{
@@ -42,6 +42,24 @@ impl<Color: PixelColor> VecFrameBufferBackend<Color> {
     }
 }
 
+fn div_rem<T: Div<Output = T> + Rem<Output = T> + Copy>(a: T, b: T) -> (T, T) {
+    (a / b, a % b)
+}
+
+fn format_duration(d: Duration) -> String {
+    let secs = d.as_secs();
+    let (mins, secs) = div_rem(secs, 60);
+    let (hrs, mins) = div_rem(mins, 60);
+    let (days, hrs) = div_rem(hrs, 24);
+    let (years, days) = div_rem(days, 365);
+
+    let mut s = String::new();
+    if years > 0 { s = format!("{s}{years}y "); }
+    if days > 0 { s = format!("{s}{days}d "); }
+    if hrs > 0 { s = format!("{s}{hrs}:"); }
+    format!("{s}{mins:02}:{secs:02}")
+}
+
 impl<Color: PixelColor> FrameBufferBackend for &mut VecFrameBufferBackend<Color> {
     type Color = Color;
 
@@ -65,16 +83,35 @@ fn draw_loop(platform: &mut impl Platform) -> Result<()> {
 
     let shades_of_red: Vec<Rgb565> = (0..32).map(|v| Rgb565::new(v, 0, 0)).collect();
     const MAX_INTENSITY: i32 = 3;
-    const FRAMES_PER_SHADE: usize = 10;
+    const FRAMES_PER_SHADE: usize = 16;
+    const UNEXAGGERATED_TIME_FRAMES: usize = FRAMES_PER_SHADE * 8;
+    const EXAGGERATION_BASE: f64 = 1.01f64;
+    const EXAGGERATION_FACTOR: f64 = 1.4f64;
     let total_frames: usize = FRAMES_PER_SHADE * shades_of_red.len();
 
     loop {
+        let start_time = Instant::now();
+
         for (idx, &bgcolor) in shades_of_red.iter().enumerate() {
+            let curr_time = Instant::now();
             let intensity = idx as i32 / (shades_of_red.len() as i32 / MAX_INTENSITY);
 
             for frame in 0..FRAMES_PER_SHADE {
+                let curr_frame = idx * FRAMES_PER_SHADE + frame;
+                let exaggeration = if curr_frame < UNEXAGGERATED_TIME_FRAMES {
+                    0f64
+                } else {
+                    let v = curr_frame.saturating_sub(UNEXAGGERATED_TIME_FRAMES) as f64;
+                    EXAGGERATION_BASE.powf(v.powf(EXAGGERATION_FACTOR))
+                };
+                let exaggerated_str = if exaggeration < 1e15 {
+                    let exaggerated_time = (curr_time - start_time) + Duration::from_secs_f64(exaggeration);
+                    format_duration(exaggerated_time)
+                } else {
+                    "9999999999999999999999999999".to_owned()
+                };
+
                 let brightness = Brightness::from({
-                    let curr_frame = idx * FRAMES_PER_SHADE + frame;
                     let linear: f32 = curr_frame as f32 / total_frames as f32;
                     // Brightness of real TFT LEDs is *very* non-linear. Event a tiny amount of
                     // PWM duty (that we map this brightness to) makes them shine relatively
@@ -92,7 +129,7 @@ fn draw_loop(platform: &mut impl Platform) -> Result<()> {
                     .clear(bgcolor)
                     .context("DrawTarget::clear failed")?;
                 Text::with_alignment(
-                    "Analyzing Android.bp...",
+                    &format!("{}\nAnalyzing Android.bp...", exaggerated_str),
                     intensify(&mut rng, platform.lcd().bounding_box().center(), intensity),
                     MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE),
                     Alignment::Center,
