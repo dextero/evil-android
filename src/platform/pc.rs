@@ -119,6 +119,7 @@ pub fn new_platform() -> Result<impl crate::platform::Platform> {
         };
         let (window, display) = SimpleWindowBuilder::new()
             .with_title("evil-android")
+            .with_inner_size(1600, 1200)
             .build(&event_loop);
 
         let vs_src = r#"
