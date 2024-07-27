@@ -91,6 +91,8 @@ struct Vertex {
 implement_vertex!(Vertex, pos);
 
 pub fn new_platform() -> Result<impl crate::platform::Platform> {
+    env_logger::init();
+
     let size = Size::new(160, 128);
     let pixel_buffer = SyncFBBackend(Arc::new(Mutex::new(Rgba32FrameBufferBackend::new(
         size,

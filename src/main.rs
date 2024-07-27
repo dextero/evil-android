@@ -1,20 +1,129 @@
-use std::{ops::{Div, Range, Rem}, time::{Duration, Instant}};
+use std::{
+    ops::{Div, Range, Rem}, time::{Duration, Instant}
+};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use embedded_graphics::{
     draw_target::DrawTarget,
-    geometry::{Dimensions, Point, Size},
+    geometry::{Dimensions, OriginDimensions, Point, Size},
+    image::GetPixel,
     mono_font::{ascii::FONT_6X10, MonoTextStyle},
-    pixelcolor::{PixelColor, Rgb565},
+    pixelcolor::{BinaryColor, PixelColor, Rgb565},
     prelude::RgbColor,
+    primitives::Rectangle,
     text::{Alignment, Text},
-    Drawable,
+    Drawable, Pixel,
 };
 use embedded_graphics_framebuf::{backends::FrameBufferBackend, FrameBuf};
+use itertools::Itertools;
 use platform::{Brightness, Platform, LED};
 use rand::Rng;
 
 mod platform;
+
+struct MaskedImage<ColorImage, MaskImage>
+where
+    ColorImage: OriginDimensions + GetPixel<Color = Rgb565>,
+    MaskImage: OriginDimensions + GetPixel<Color = BinaryColor>,
+{
+    color_image: ColorImage,
+    mask_image: MaskImage,
+    pos: Point,
+}
+
+impl<ColorImage, MaskImage> MaskedImage<ColorImage, MaskImage>
+where
+    ColorImage: OriginDimensions + GetPixel<Color = Rgb565>,
+    MaskImage: OriginDimensions + GetPixel<Color = BinaryColor>,
+{
+    fn new(color_image: ColorImage, mask_image: MaskImage, pos: Point) -> Result<Self> {
+        if color_image.bounding_box() != mask_image.bounding_box() {
+            bail!(
+                "inconsistent dimensions of color vs mask\ncolor: {cbb:?}\n mask: {mbb:?}",
+                cbb = color_image.bounding_box(),
+                mbb = mask_image.bounding_box()
+            );
+        }
+        Ok(Self {
+            color_image,
+            mask_image,
+            pos,
+        })
+    }
+}
+
+impl<ColorImage, MaskImage> Drawable for MaskedImage<ColorImage, MaskImage>
+where
+    ColorImage: OriginDimensions + GetPixel<Color = Rgb565>,
+    MaskImage: OriginDimensions + GetPixel<Color = BinaryColor>,
+{
+    type Color = Rgb565;
+    type Output = ();
+
+    fn draw<D>(&self, target: &mut D) -> std::result::Result<Self::Output, D::Error>
+    where
+        D: DrawTarget<Color = Self::Color>,
+    {
+        let bb = self.color_image.bounding_box();
+        let x_range = bb.top_left.x..bb.bottom_right().unwrap().x;
+        let y_range = bb.top_left.y..=bb.bottom_right().unwrap().y;
+        let points = y_range
+            .cartesian_product(x_range)
+            .map(|(y, x)| Point::new(x, y));
+        let pixels = points.filter_map(|p| {
+            if self.mask_image.pixel(p).unwrap().is_on() {
+                Some(Pixel(p + self.pos, self.color_image.pixel(p).unwrap()))
+            } else {
+                None
+            }
+        });
+        target.draw_iter(pixels)
+    }
+}
+
+// no const fn for this in std yet :(
+const fn parse_usize(s: &str) -> usize {
+    let mut val = 0;
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        val *= 10;
+        match bytes[i] {
+            b'0'..=b'9' => val += (bytes[i] - b'0') as usize,
+            _ => panic!("failed to parse int"),
+        }
+        i += 1;
+    }
+    val
+}
+
+mod dumpster_fire {
+    use anyhow::Result;
+    use embedded_graphics::{
+        geometry::{Point, Size},
+        image::ImageRaw,
+        pixelcolor::{BinaryColor, Rgb565},
+        Drawable,
+    };
+
+    use crate::{parse_usize, MaskedImage};
+
+    const WIDTH: usize = parse_usize(env!("DUMPSTER_FIRE_WIDTH"));
+    const HEIGHT: usize = parse_usize(env!("DUMPSTER_FIRE_HEIGHT"));
+    const IMAGE_DATA: [u8; WIDTH * HEIGHT * std::mem::size_of::<Rgb565>()] =
+        *include_bytes!(env!("DUMPSTER_FIRE_COLOR"));
+    const MASK_DATA: [u8; (WIDTH + 7) / 8 * HEIGHT] = *include_bytes!(env!("DUMPSTER_FIRE_MASK"));
+    const COLOR: ImageRaw<Rgb565> = ImageRaw::new(&IMAGE_DATA, WIDTH as u32);
+    const MASK: ImageRaw<BinaryColor> = ImageRaw::new(&MASK_DATA, WIDTH as u32);
+
+    pub fn size() -> Size {
+        Size::new(WIDTH.try_into().unwrap(), HEIGHT.try_into().unwrap())
+    }
+
+    pub fn image_at(pos: Point) -> Result<impl Drawable<Color = Rgb565>> {
+        MaskedImage::new(COLOR, MASK, pos)
+    }
+}
 
 fn intensify(rng: &mut impl Rng, point: Point, amplitude: i32) -> Point {
     if amplitude == 0 {
@@ -54,9 +163,15 @@ fn format_duration(d: Duration) -> String {
     let (years, days) = div_rem(days, 365);
 
     let mut s = String::new();
-    if years > 0 { s = format!("{s}{years}y "); }
-    if days > 0 { s = format!("{s}{days}d "); }
-    if hrs > 0 { s = format!("{s}{hrs}:"); }
+    if years > 0 {
+        s = format!("{s}{years}y ");
+    }
+    if days > 0 {
+        s = format!("{s}{days}d ");
+    }
+    if hrs > 0 {
+        s = format!("{s}{hrs}:");
+    }
     format!("{s}{mins:02}:{secs:02}")
 }
 
@@ -83,7 +198,10 @@ struct RowOffset {
 }
 
 impl RowOffset {
-    fn new<C: PixelColor, B: FrameBufferBackend<Color = C>>(offset: usize, fb: &FrameBuf<C, B>) -> Self {
+    fn new<C: PixelColor, B: FrameBufferBackend<Color = C>>(
+        offset: usize,
+        fb: &FrameBuf<C, B>,
+    ) -> Self {
         assert!(fb.width() > 0);
         let row_width = fb.width();
         let offset = offset.min(row_width);
@@ -130,17 +248,29 @@ impl From<usize> for Intensity {
     }
 }
 
-fn add_noise<B: FrameBufferBackend<Color = Rgb565>>(fb: &mut FrameBuf<Rgb565, B>, rng: &mut impl Rng, intensity: Intensity) {
+fn add_noise<B: FrameBufferBackend<Color = Rgb565>>(
+    fb: &mut FrameBuf<Rgb565, B>,
+    rng: &mut impl Rng,
+    intensity: Intensity,
+) {
     for index in 0..fb.data.nr_elements() {
         let apply_noise = rng.next_u32() as usize % Intensity::MAX.0 < intensity.0;
         if apply_noise {
-            let random_color = Rgb565::new((rng.next_u32() % 32) as u8, (rng.next_u32() % 64) as u8, (rng.next_u32() % 32) as u8);
+            let random_color = Rgb565::new(
+                (rng.next_u32() % 32) as u8,
+                (rng.next_u32() % 64) as u8,
+                (rng.next_u32() % 32) as u8,
+            );
             fb.data.set(index, random_color);
         }
     }
 }
 
-fn glitch<C: PixelColor, B: FrameBufferBackend<Color = C>>(fb: &mut FrameBuf<C, B>, rng: &mut impl Rng, max_offset: usize) {
+fn glitch<C: PixelColor, B: FrameBufferBackend<Color = C>>(
+    fb: &mut FrameBuf<C, B>,
+    rng: &mut impl Rng,
+    max_offset: usize,
+) {
     if max_offset == 0 {
         return;
     }
@@ -197,7 +327,8 @@ fn draw_loop(platform: &mut impl Platform) -> Result<()> {
                     EXAGGERATION_BASE.powf(v.powf(EXAGGERATION_FACTOR))
                 };
                 let exaggerated_str = if exaggeration < 1e15 {
-                    let exaggerated_time = (curr_time - start_time) + Duration::from_secs_f64(exaggeration);
+                    let exaggerated_time =
+                        (curr_time - start_time) + Duration::from_secs_f64(exaggeration);
                     format_duration(exaggerated_time)
                 } else {
                     glitchiness += 1;
@@ -218,17 +349,24 @@ fn draw_loop(platform: &mut impl Platform) -> Result<()> {
                 let mut framebuffer =
                     FrameBuf::new(&mut buffer, size.width.try_into()?, size.height.try_into()?);
 
+                let lcd_center = platform.lcd().bounding_box().center();
                 framebuffer
                     .clear(bgcolor)
                     .context("DrawTarget::clear failed")?;
                 Text::with_alignment(
                     &format!("{}\nAnalyzing Android.bp...", exaggerated_str),
-                    intensify(&mut rng, platform.lcd().bounding_box().center(), intensity),
+                    intensify(&mut rng, lcd_center, intensity),
                     MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE),
                     Alignment::Center,
                 )
                 .draw(&mut framebuffer)
                 .context("Drawable::draw failed")?;
+
+                if glitchiness > 0 && frame / 4 % 2 == 0 {
+                    let pos =
+                        lcd_center - Rectangle::new(Point::zero(), dumpster_fire::size()).center();
+                    dumpster_fire::image_at(pos)?.draw(&mut framebuffer)?;
+                }
 
                 glitch(&mut framebuffer, &mut rng, glitchiness as usize);
 
